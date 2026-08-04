@@ -1,0 +1,14 @@
+executor.type = "uv"
+
+[tasks]
+run = { cmd = "python -m sayra.app.main", help = "Run the API server." }
+lint = { cmd = "ruff check src tests", help = "Run Ruff checks." }
+format = { cmd = "ruff format src tests", help = "Format source files." }
+format-check = { cmd = "ruff format --check src tests", help = "Check formatting." }
+types = { cmd = "mypy src/sayra", help = "Run static type checking." }
+test = { cmd = "pytest", help = "Run the test suite with coverage." }
+
+[tasks.check]
+help = "Run all non-mutating quality gates."
+sequence = ["lint", "format-check", "types", "test"]
+ignore_fail = false

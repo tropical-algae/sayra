@@ -1,0 +1,1 @@
+"""Configured Markdown prompt templates."""
