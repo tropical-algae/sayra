@@ -1,6 +1,4 @@
 import asyncio
-from collections.abc import Awaitable
-from typing import TypeVar
 
 import json_repair
 from loguru import logger
@@ -8,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sayra.common.config import Settings
 from sayra.common.datetime import utc_now
+from sayra.common.decorators import traced
 from sayra.common.identifiers import IdType, new_id
 from sayra.core.db.crud import conversation as conversation_crud
 from sayra.core.db.crud import runtime as runtime_crud
@@ -36,8 +35,6 @@ from sayra.core.types import (
 from sayra.core.workflow.events import EventBroker
 from sayra.core.workflow.segmenter import SentenceSegmenter
 from sayra.core.workflow.tracing import TraceRecorder
-
-T = TypeVar("T")
 
 
 class ConversationWorkflow:
@@ -140,13 +137,7 @@ class ConversationWorkflow:
             session.id, turn.id, "turn.started", {"status": "processing"}
         )
         try:
-            assistant_text = await self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.CONVERSATION,
-                self.config.LLM_PROVIDER_NAME,
-                self._generate_reply(session, turn, history),
-            )
+            assistant_text = await self._generate_reply(session, turn, history)
         except asyncio.CancelledError:
             if turn.id in self._preserve_on_cancel:
                 self._preserve_on_cancel.discard(turn.id)
@@ -159,45 +150,19 @@ class ConversationWorkflow:
             return {"turn_id": turn.id, "status": "failed"}
 
         auxiliary_tasks = [
-            self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.TRANSLATION,
-                self.config.LLM_PROVIDER_NAME,
-                self._generate_translation(session, turn, assistant_text),
-            ),
-            self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.SUGGESTIONS,
-                self.config.LLM_PROVIDER_NAME,
-                self._generate_suggestions(session, turn, assistant_text),
-            ),
+            self._generate_translation(session, turn, assistant_text),
+            self._generate_suggestions(session, turn, assistant_text),
         ]
         if session.conversation_mode == ConversationMode.GUIDED:
-            auxiliary_tasks.append(
-                self._run_traced(
-                    session.id,
-                    turn.id,
-                    TraceStep.GUIDANCE,
-                    self.config.LLM_PROVIDER_NAME,
-                    self._generate_guidance(session, turn),
-                )
-            )
+            auxiliary_tasks.append(self._generate_guidance(session, turn))
         else:
             await self._set_task_status(
                 turn.id, "guidance_task_status", TaskStatus.SKIPPED
             )
         try:
             await asyncio.gather(*auxiliary_tasks, return_exceptions=True)
-            await self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.PERSISTENCE,
-                None,
-                self._complete_turn(session.id, turn.id),
-            )
-            await self._maybe_update_summary(session.id, turn.id)
+            await self._complete_turn(session, turn)
+            await self._maybe_update_summary(session, turn)
         except asyncio.CancelledError:
             if turn.id in self._preserve_on_cancel:
                 self._preserve_on_cancel.discard(turn.id)
@@ -228,6 +193,10 @@ class ConversationWorkflow:
                 )
         return session, turn, history
 
+    @traced(
+        TraceStep.CONVERSATION,
+        provider=lambda self: self.config.LLM_PROVIDER_NAME,
+    )
     async def _generate_reply(
         self, session: ConversationSession, turn: Turn, history: list[Turn]
     ) -> str:
@@ -239,7 +208,7 @@ class ConversationWorkflow:
         )
         speech_queue: asyncio.Queue[str | None] = asyncio.Queue()
         audio_task = asyncio.create_task(
-            self._generate_audio_traced(session, turn, speech_queue),
+            self._generate_audio(session, turn, speech_queue),
             name=f"tts:{turn.id}",
         )
         try:
@@ -271,6 +240,7 @@ class ConversationWorkflow:
         await asyncio.gather(audio_task, return_exceptions=True)
         return text
 
+    @traced(TraceStep.TTS, provider=lambda self: self.config.TTS_PROVIDER_NAME)
     async def _generate_audio(
         self,
         session: ConversationSession,
@@ -349,20 +319,10 @@ class ConversationWorkflow:
             {"audio_id": asset_id},
         )
 
-    async def _generate_audio_traced(
-        self,
-        session: ConversationSession,
-        turn: Turn,
-        speech_queue: asyncio.Queue[str | None],
-    ) -> None:
-        await self._run_traced(
-            session.id,
-            turn.id,
-            TraceStep.TTS,
-            self.config.TTS_PROVIDER_NAME,
-            self._generate_audio(session, turn, speech_queue),
-        )
-
+    @traced(
+        TraceStep.TRANSLATION,
+        provider=lambda self: self.config.LLM_PROVIDER_NAME,
+    )
     async def _generate_translation(
         self, session: ConversationSession, turn: Turn, text: str
     ) -> None:
@@ -395,6 +355,10 @@ class ConversationWorkflow:
             {"text": translation},
         )
 
+    @traced(
+        TraceStep.SUGGESTIONS,
+        provider=lambda self: self.config.LLM_PROVIDER_NAME,
+    )
     async def _generate_suggestions(
         self, session: ConversationSession, turn: Turn, text: str
     ) -> None:
@@ -452,6 +416,10 @@ class ConversationWorkflow:
                 session.id, turn.id, "assistant.suggestion.completed", item
             )
 
+    @traced(
+        TraceStep.GUIDANCE,
+        provider=lambda self: self.config.LLM_PROVIDER_NAME,
+    )
     async def _generate_guidance(self, session: ConversationSession, turn: Turn) -> None:
         await self._set_task_status(turn.id, "guidance_task_status", TaskStatus.RUNNING)
         try:
@@ -493,12 +461,13 @@ class ConversationWorkflow:
                 exc,
             )
 
-    async def _complete_turn(self, session_id: str, turn_id: str) -> None:
+    @traced(TraceStep.PERSISTENCE)
+    async def _complete_turn(self, session: ConversationSession, turn: Turn) -> None:
         async with self.session_factory() as db:
             await conversation_crud.update_completed_turn_and_session(
-                db, session_id, turn_id
+                db, session.id, turn.id
             )
-        await self.event_broker.emit(session_id, turn_id, "turn.completed")
+        await self.event_broker.emit(session.id, turn.id, "turn.completed")
 
     async def _finish_failed(self, session_id: str, turn_id: str, exc: Exception) -> None:
         logger.exception("Core task failed for turn {}", turn_id)
@@ -551,11 +520,13 @@ class ConversationWorkflow:
                 db, turn_id, field, status
             )
 
-    async def _maybe_update_summary(self, session_id: str, turn_id: str) -> None:
+    async def _maybe_update_summary(
+        self, session: ConversationSession, turn: Turn
+    ) -> None:
         async with self.session_factory() as db:
             context = await conversation_crud.select_summary_context_by_session_id(
                 db,
-                session_id,
+                session.id,
                 self.config.CONTEXT_SUMMARY_TRIGGER_TURNS,
                 self.config.CONTEXT_RECENT_TURNS,
             )
@@ -563,19 +534,24 @@ class ConversationWorkflow:
             return
         old_summary, summarize, last_index = context
         try:
-            summary = await self._run_traced(
-                session_id,
-                turn_id,
-                TraceStep.SUMMARY,
-                self.config.LLM_PROVIDER_NAME,
-                self.llm.complete(self.prompts.summary(old_summary, summarize)),
-            )
+            summary = await self._generate_summary(session, turn, old_summary, summarize)
             async with self.session_factory() as db:
                 await conversation_crud.update_session_summary_by_id(
-                    db, session_id, summary.strip(), last_index
+                    db, session.id, summary.strip(), last_index
                 )
         except Exception as exc:
-            logger.warning("Summary update failed for session {}: {}", session_id, exc)
+            logger.warning("Summary update failed for session {}: {}", session.id, exc)
+
+    @traced(TraceStep.SUMMARY, provider=lambda self: self.config.LLM_PROVIDER_NAME)
+    async def _generate_summary(
+        self,
+        session: ConversationSession,
+        turn: Turn,
+        old_summary: str | None,
+        summarize: list[Turn],
+    ) -> str:
+        _ = session, turn
+        return await self.llm.complete(self.prompts.summary(old_summary, summarize))
 
     async def retry_auxiliary(self, turn_id: str, task: AuxiliaryTask) -> None:
         async with self.session_factory() as db:
@@ -597,51 +573,16 @@ class ConversationWorkflow:
             if remaining:
                 await queue.put(remaining)
             await queue.put(None)
-            await self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.TTS,
-                self.config.TTS_PROVIDER_NAME,
-                self._generate_audio(session, turn, queue),
-            )
+            await self._generate_audio(session, turn, queue)
         elif task == AuxiliaryTask.TRANSLATION:
-            await self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.TRANSLATION,
-                self.config.LLM_PROVIDER_NAME,
-                self._generate_translation(session, turn, assistant_text),
-            )
+            await self._generate_translation(session, turn, assistant_text)
         elif task == AuxiliaryTask.SUGGESTIONS:
-            await self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.SUGGESTIONS,
-                self.config.LLM_PROVIDER_NAME,
-                self._generate_suggestions(session, turn, assistant_text),
-            )
+            await self._generate_suggestions(session, turn, assistant_text)
         elif task == AuxiliaryTask.GUIDANCE:
-            await self._run_traced(
-                session.id,
-                turn.id,
-                TraceStep.GUIDANCE,
-                self.config.LLM_PROVIDER_NAME,
-                self._generate_guidance(session, turn),
-            )
+            await self._generate_guidance(session, turn)
         await self.event_broker.emit(
             session.id,
             turn.id,
             "turn.auxiliary_retry.completed",
             {"task": task.value},
         )
-
-    async def _run_traced(
-        self,
-        session_id: str,
-        turn_id: str,
-        step: TraceStep,
-        provider: str | None,
-        operation: Awaitable[T],
-    ) -> T:
-        async with self.traces.track(session_id, turn_id, step, provider):
-            return await operation
