@@ -61,35 +61,33 @@ async def conversation_socket(
                 await send_protocol_error(str(exc))
                 continue
             try:
-                async with container.session_factory() as db:
-                    if client_event.type == "turn.submit":
-                        if not client_event.submitted_text:
-                            await send_protocol_error("submitted_text is required")
-                            continue
-                        turn = await turn_service.submit_turn(
-                            db,
-                            container.workflow,
-                            session_id,
-                            client_event.submitted_text,
-                            client_event.turn_id,
-                            client_event.client_request_id,
-                        )
-                        await start_subscription(turn.id, client_event.after_sequence)
-                    elif client_event.type == "turn.subscribe":
-                        if not client_event.turn_id:
-                            await send_protocol_error("turn_id is required")
-                            continue
-                        await turn_service.get_turn(db, session_id, client_event.turn_id)
-                        await start_subscription(
-                            client_event.turn_id, client_event.after_sequence
-                        )
-                    elif client_event.type == "turn.cancel":
-                        if not client_event.turn_id:
-                            await send_protocol_error("turn_id is required")
-                            continue
-                        await turn_service.get_turn(db, session_id, client_event.turn_id)
-                        if not await container.workflow.cancel(client_event.turn_id):
-                            await send_protocol_error("turn is not running")
+                if client_event.type == "turn.submit":
+                    if not client_event.submitted_text:
+                        await send_protocol_error("submitted_text is required")
+                        continue
+                    turn = await turn_service.submit_turn(
+                        container.workflow,
+                        session_id,
+                        client_event.submitted_text,
+                        client_event.turn_id,
+                        client_event.client_request_id,
+                    )
+                    await start_subscription(turn.id, client_event.after_sequence)
+                elif client_event.type == "turn.subscribe":
+                    if not client_event.turn_id:
+                        await send_protocol_error("turn_id is required")
+                        continue
+                    await turn_service.get_turn(session_id, client_event.turn_id)
+                    await start_subscription(
+                        client_event.turn_id, client_event.after_sequence
+                    )
+                elif client_event.type == "turn.cancel":
+                    if not client_event.turn_id:
+                        await send_protocol_error("turn_id is required")
+                        continue
+                    await turn_service.get_turn(session_id, client_event.turn_id)
+                    if not await container.workflow.cancel(client_event.turn_id):
+                        await send_protocol_error("turn is not running")
             except SayraError as exc:
                 await send_protocol_error(str(exc))
     except WebSocketDisconnect:

@@ -5,12 +5,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sayra.common.datetime import utc_now
+from sayra.common.decorators import with_db_session
 from sayra.common.identifiers import IdType, new_id
 from sayra.core.db.models import AudioAsset, ConversationSession, Turn
 from sayra.core.enums import ACTIVE_TURN_STATUSES, SessionStatus
 from sayra.core.exceptions import ConflictError, NotFoundError
 
 
+@with_db_session
 async def insert_session(
     db: AsyncSession, values: Mapping[str, Any]
 ) -> ConversationSession:
@@ -29,6 +31,7 @@ async def insert_session(
     return session
 
 
+@with_db_session
 async def select_session_by_id(db: AsyncSession, session_id: str) -> ConversationSession:
     session = await db.get(ConversationSession, session_id)
     if not session:
@@ -36,6 +39,7 @@ async def select_session_by_id(db: AsyncSession, session_id: str) -> Conversatio
     return session
 
 
+@with_db_session
 async def select_sessions_page(
     db: AsyncSession, offset: int, limit: int
 ) -> tuple[Sequence[ConversationSession], int]:
@@ -53,6 +57,7 @@ async def select_sessions_page(
     return sessions, int(total or 0)
 
 
+@with_db_session
 async def update_session_for_deletion_by_id(
     db: AsyncSession, session_id: str
 ) -> list[str]:
@@ -85,6 +90,7 @@ async def update_session_for_deletion_by_id(
     return file_paths
 
 
+@with_db_session
 async def update_session_deletion_result_by_id(
     db: AsyncSession, session_id: str, *, failed: bool
 ) -> None:
@@ -98,6 +104,7 @@ async def update_session_deletion_result_by_id(
     await db.commit()
 
 
+@with_db_session
 async def select_failed_session_deletion_ids(db: AsyncSession) -> Sequence[str]:
     return (
         await db.scalars(

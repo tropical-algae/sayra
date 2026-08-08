@@ -1,10 +1,12 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sayra.common.decorators import with_db_session
 from sayra.core.db.models import AudioAsset, ConversationSession, SuggestedReply, Turn
 from sayra.core.enums import AudioAssetStatus, TurnStatus
 from sayra.core.exceptions import InvalidStateError, NotFoundError
 
 
+@with_db_session
 async def select_ready_audio_by_id(db: AsyncSession, audio_id: str) -> AudioAsset:
     asset = await db.get(AudioAsset, audio_id)
     if not asset or asset.status != AudioAssetStatus.READY:
@@ -12,6 +14,7 @@ async def select_ready_audio_by_id(db: AsyncSession, audio_id: str) -> AudioAsse
     return asset
 
 
+@with_db_session
 async def select_suggestion_audio_context_by_ids(
     db: AsyncSession, turn_id: str, suggestion_id: str
 ) -> tuple[SuggestedReply, Turn, ConversationSession | None, AudioAsset | None]:
@@ -33,6 +36,7 @@ async def select_suggestion_audio_context_by_ids(
     return suggestion, turn, session, None
 
 
+@with_db_session
 async def insert_suggestion_audio(
     db: AsyncSession, suggestion_id: str, audio: AudioAsset
 ) -> AudioAsset:

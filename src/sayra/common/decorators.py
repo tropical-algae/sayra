@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
     from sayra.core.db.models import ConversationSession, Turn
@@ -13,14 +15,22 @@ R = TypeVar("R")
 ProviderResolver = Callable[[Any], str | None]
 
 
-class TraceContext(Protocol):
-    def track(
-        self,
-        session_id: str,
-        turn_id: str | None,
-        step: TraceStep,
-        provider: str | None = None,
-    ) -> Any: ...
+def with_db_session(
+    operation: Callable[
+        Concatenate[AsyncSession, P],
+        Coroutine[Any, Any, R],
+    ],
+) -> Callable[P, Coroutine[Any, Any, R]]:
+    """Run a CRUD operation with a short-lived local database session."""
+
+    @wraps(operation)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        from sayra.core.db.session import LocalSession
+
+        async with LocalSession() as db:
+            return await operation(db, *args, **kwargs)
+
+    return wrapper
 
 
 def traced(
@@ -38,7 +48,7 @@ def traced(
         Coroutine[Any, Any, R],
     ],
 ]:
-    """Trace an async instance method when its owner provides ``self.traces``.
+    """Persist the execution trace of an async instance method.
 
     The decorated method must receive ``session`` and ``turn`` immediately after
     ``self``. Provider resolver functions are evaluated against the owning instance
@@ -62,13 +72,11 @@ def traced(
             *args: P.args,
             **kwargs: P.kwargs,
         ) -> R:
-            traces = cast(TraceContext | None, getattr(self, "traces", None))
-            if traces is None:
-                return await method(self, session, turn, *args, **kwargs)
+            from sayra.core.workflow.tracing import track_trace
 
             resolved_provider = provider(self) if callable(provider) else provider
 
-            async with traces.track(
+            async with track_trace(
                 session.id,
                 turn.id,
                 step,

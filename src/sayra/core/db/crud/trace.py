@@ -4,11 +4,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sayra.common.datetime import utc_now
+from sayra.common.decorators import with_db_session
 from sayra.common.identifiers import IdType, new_id
 from sayra.core.db.models import Trace
 from sayra.core.enums import TraceStatus, TraceStep
 
 
+@with_db_session
 async def insert_trace(
     db: AsyncSession,
     session_id: str,
@@ -42,6 +44,7 @@ async def insert_trace(
     return trace_id
 
 
+@with_db_session
 async def update_trace_status_by_id(
     db: AsyncSession,
     trace_id: str,
@@ -58,6 +61,7 @@ async def update_trace_status_by_id(
         await db.commit()
 
 
+@with_db_session
 async def update_trace_metadata_by_id(
     db: AsyncSession,
     trace_id: str,

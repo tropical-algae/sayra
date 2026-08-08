@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sayra.common.datetime import utc_now
+from sayra.common.decorators import with_db_session
 from sayra.common.identifiers import IdType, new_id
 from sayra.core.db.models import ConversationSession, Trace, Turn
 from sayra.core.enums import (
@@ -30,6 +31,7 @@ def _with_details(statement):
     )
 
 
+@with_db_session
 async def select_turn_by_session_and_id(
     db: AsyncSession, session_id: str, turn_id: str
 ) -> Turn:
@@ -39,6 +41,7 @@ async def select_turn_by_session_and_id(
     return turn
 
 
+@with_db_session
 async def select_turns_by_session_id(
     db: AsyncSession, session_id: str, offset: int, limit: int
 ) -> tuple[Sequence[Turn], int]:
@@ -61,6 +64,7 @@ async def select_turns_by_session_id(
     return turns, int(total or 0)
 
 
+@with_db_session
 async def select_traces_by_turn_id(db: AsyncSession, turn_id: str) -> Sequence[Trace]:
     if not await db.get(Turn, turn_id):
         raise NotFoundError(f"Turn {turn_id} does not exist")
@@ -73,6 +77,7 @@ async def select_traces_by_turn_id(db: AsyncSession, turn_id: str) -> Sequence[T
     ).all()
 
 
+@with_db_session
 async def insert_or_update_turn_submission(
     db: AsyncSession,
     session_id: str,
@@ -143,6 +148,7 @@ async def insert_or_update_turn_submission(
     return detailed, True
 
 
+@with_db_session
 async def update_turn_for_auxiliary_retry_by_id(
     db: AsyncSession, turn_id: str, task: AuxiliaryTask
 ) -> Turn:

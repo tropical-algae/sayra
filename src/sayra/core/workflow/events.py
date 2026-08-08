@@ -5,7 +5,6 @@ from collections.abc import AsyncIterator
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sayra.core.db.crud import event as event_crud
 
@@ -27,12 +26,10 @@ class EventBroker:
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession],
         live_buffer_size: int,
         audio_retention_seconds: float,
         replay_batch_size: int,
     ) -> None:
-        self.session_factory = session_factory
         self.live_buffer_size = live_buffer_size
         self.audio_retention_seconds = audio_retention_seconds
         self.replay_batch_size = replay_batch_size
@@ -62,15 +59,13 @@ class EventBroker:
                 if latest:
                     sequence = latest + 1
                 else:
-                    async with self.session_factory() as db:
-                        sequence = await event_crud.select_next_event_sequence_by_turn_id(
-                            db, turn_id
-                        )
-            else:
-                async with self.session_factory() as db:
-                    sequence = await event_crud.insert_event(
-                        db, turn_id, event_type, data or {}, latest
+                    sequence = await event_crud.select_next_event_sequence_by_turn_id(
+                        turn_id
                     )
+            else:
+                sequence = await event_crud.insert_event(
+                    turn_id, event_type, data or {}, latest
+                )
             self._latest_sequences[turn_id] = sequence
         event_data = dict(data or {})
         if audio_data is not None:
@@ -104,10 +99,9 @@ class EventBroker:
         return event
 
     async def list_after(self, turn_id: str, sequence: int) -> list[ServerEvent]:
-        async with self.session_factory() as db:
-            records = await event_crud.select_events_by_turn_id_after_sequence(
-                db, turn_id, sequence, self.replay_batch_size
-            )
+        records = await event_crud.select_events_by_turn_id_after_sequence(
+            turn_id, sequence, self.replay_batch_size
+        )
         events_by_sequence: dict[int, ServerEvent] = {}
         for record in records:
             events_by_sequence[record.sequence] = ServerEvent(

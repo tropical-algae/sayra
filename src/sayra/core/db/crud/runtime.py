@@ -3,10 +3,12 @@ from collections.abc import Sequence
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sayra.common.decorators import with_db_session
 from sayra.core.db.models import Turn
 from sayra.core.enums import TaskStatus, TurnStatus
 
 
+@with_db_session
 async def update_interrupted_tasks_and_select_recoverable_turn_ids(
     db: AsyncSession,
 ) -> Sequence[str]:

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from sayra.common.datetime import utc_now
 from sayra.common.identifiers import IdType, new_id
@@ -12,13 +11,13 @@ from sayra.core.db.models import AudioAsset, Turn
 from sayra.core.enums import AudioAssetStatus, AudioAssetType, TraceStep
 from sayra.core.exceptions import BadRequestError, PayloadTooLargeError
 from sayra.core.types import AudioInput
+from sayra.core.workflow.tracing import track_trace, update_trace
 
 if TYPE_CHECKING:
     from sayra.app.container import AppContainer
 
 
 async def transcribe_turn(
-    db: AsyncSession,
     container: AppContainer,
     session_id: str,
     audio: bytes,
@@ -31,13 +30,12 @@ async def transcribe_turn(
         raise PayloadTooLargeError("Uploaded audio exceeds MAX_UPLOAD_BYTES")
 
     turn_id = new_id(IdType.TURN)
-    session = await transcription_crud.insert_transcription_turn(db, session_id, turn_id)
+    session = await transcription_crud.insert_transcription_turn(session_id, turn_id)
     file_path = f"sessions/{session_id}/turns/{turn_id}/user.wav"
     stored = None
     recording_persisted = False
     try:
-        traces = container.workflow.traces
-        async with traces.track(
+        async with track_trace(
             session_id,
             turn_id,
             TraceStep.TRANSCRIPTION,
@@ -63,10 +61,10 @@ async def transcribe_turn(
                 checksum_sha256=stored.checksum_sha256,
                 created_at=utc_now(),
             )
-            await transcription_crud.insert_recording_asset(db, asset)
+            await transcription_crud.insert_recording_asset(asset)
             recording_persisted = True
             result = await container.asr.transcribe(normalized, session.target_language)
-            await traces.annotate(
+            await update_trace(
                 trace_id,
                 provider_request_id=result.provider_request_id,
                 metadata=result.metadata,
@@ -75,17 +73,16 @@ async def transcribe_turn(
         refined = None
         if session.transcript_refinement_enabled:
             try:
-                async with traces.track(
+                async with track_trace(
                     session_id,
                     turn_id,
                     TraceStep.REFINEMENT,
                     container.config.LLM_PROVIDER_NAME,
                 ):
-                    refined = (
-                        await container.llm.complete(
-                            container.prompts.refinement(session, result.text)
-                        )
-                    ).strip()
+                    refined = await container.llm.complete(
+                        container.prompts.refinement(session, result.text)
+                    )
+                    refined = refined.strip()
             except Exception as exc:
                 logger.warning(
                     "Transcript refinement failed for turn {}; using raw ASR: {}",
@@ -95,7 +92,6 @@ async def transcribe_turn(
 
         transcript = refined or result.text
         turn = await transcription_crud.update_transcription_result_by_turn_id(
-            db,
             turn_id,
             result.text,
             refined,
@@ -115,5 +111,5 @@ async def transcribe_turn(
                     stored.file_path,
                     cleanup_error,
                 )
-        await transcription_crud.update_failed_transcription_by_turn_id(db, turn_id, exc)
+        await transcription_crud.update_failed_transcription_by_turn_id(turn_id, exc)
         raise

@@ -2,7 +2,6 @@ import asyncio
 
 import json_repair
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sayra.common.config import Settings
 from sayra.common.datetime import utc_now
@@ -34,7 +33,6 @@ from sayra.core.types import (
 )
 from sayra.core.workflow.events import EventBroker
 from sayra.core.workflow.segmenter import SentenceSegmenter
-from sayra.core.workflow.tracing import TraceRecorder
 
 
 class ConversationWorkflow:
@@ -42,7 +40,6 @@ class ConversationWorkflow:
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession],
         llm: LLMProvider,
         tts: TTSProvider,
         storage: FileStorage,
@@ -50,14 +47,12 @@ class ConversationWorkflow:
         prompts: PromptBuilder,
         config: Settings,
     ) -> None:
-        self.session_factory = session_factory
         self.llm = llm
         self.tts = tts
         self.storage = storage
         self.event_broker = events
         self.config = config
         self.prompts = prompts
-        self.traces = TraceRecorder(session_factory)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._preserve_on_cancel: set[str] = set()
 
@@ -87,10 +82,9 @@ class ConversationWorkflow:
 
     async def recover(self) -> None:
         """Recover durable turn state before the API starts accepting traffic."""
-        async with self.session_factory() as db:
-            turn_ids = await runtime_crud.update_interrupted_tasks_and_select_recoverable_turn_ids(
-                db
-            )
+        turn_ids = (
+            await runtime_crud.update_interrupted_tasks_and_select_recoverable_turn_ids()
+        )
         for turn_id in turn_ids:
             self.start(turn_id)
 
@@ -175,15 +169,14 @@ class ConversationWorkflow:
     async def _start_turn(
         self, turn_id: str
     ) -> tuple[ConversationSession, Turn, list[Turn]]:
-        async with self.session_factory() as db:
-            (
-                session,
-                turn,
-                history,
-                stale_paths,
-            ) = await conversation_crud.update_turn_for_workflow_start_by_id(
-                db, turn_id, self.config.CONTEXT_RECENT_TURNS
-            )
+        (
+            session,
+            turn,
+            history,
+            stale_paths,
+        ) = await conversation_crud.update_turn_for_workflow_start_by_id(
+            turn_id, self.config.CONTEXT_RECENT_TURNS
+        )
         for file_path in stale_paths:
             try:
                 await self.storage.delete(file_path)
@@ -232,8 +225,7 @@ class ConversationWorkflow:
             audio_task.cancel()
             await asyncio.gather(audio_task, return_exceptions=True)
             raise ProviderError("LLM returned an empty assistant response")
-        async with self.session_factory() as db:
-            await conversation_crud.update_turn_reply_by_id(db, turn.id, text)
+        await conversation_crud.update_turn_reply_by_id(turn.id, text)
         await self.event_broker.emit(
             session.id, turn.id, "assistant.text.completed", {"text": text}
         )
@@ -293,10 +285,7 @@ class ConversationWorkflow:
                 checksum_sha256=stored.checksum_sha256,
                 created_at=utc_now(),
             )
-            async with self.session_factory() as db:
-                await conversation_crud.insert_assistant_audio_and_update_turn(
-                    db, turn.id, asset
-                )
+            await conversation_crud.insert_assistant_audio_and_update_turn(turn.id, asset)
             asset_persisted = True
         except Exception as exc:
             if stored is not None and not asset_persisted:
@@ -335,10 +324,7 @@ class ConversationWorkflow:
             ).strip()
             if not translation:
                 raise ProviderError("LLM returned an empty translation")
-            async with self.session_factory() as db:
-                await conversation_crud.update_turn_translation_by_id(
-                    db, turn.id, translation
-                )
+            await conversation_crud.update_turn_translation_by_id(turn.id, translation)
         except Exception as exc:
             await self._auxiliary_failed(
                 session.id,
@@ -398,10 +384,9 @@ class ConversationWorkflow:
                         "native_text": suggestion.native_text,
                     }
                 )
-            async with self.session_factory() as db:
-                await conversation_crud.insert_suggestions_and_update_turn(
-                    db, turn.id, suggestions
-                )
+            await conversation_crud.insert_suggestions_and_update_turn(
+                turn.id, suggestions
+            )
         except Exception as exc:
             await self._auxiliary_failed(
                 session.id,
@@ -429,8 +414,7 @@ class ConversationWorkflow:
             result = json_repair.loads(raw)
             if not isinstance(result, dict):
                 raise ProviderError("LLM returned invalid guidance JSON")
-            async with self.session_factory() as db:
-                await conversation_crud.update_turn_guidance_by_id(db, turn.id, result)
+            await conversation_crud.update_turn_guidance_by_id(turn.id, result)
         except Exception as exc:
             await self._auxiliary_failed(
                 session.id,
@@ -463,16 +447,12 @@ class ConversationWorkflow:
 
     @traced(TraceStep.PERSISTENCE)
     async def _complete_turn(self, session: ConversationSession, turn: Turn) -> None:
-        async with self.session_factory() as db:
-            await conversation_crud.update_completed_turn_and_session(
-                db, session.id, turn.id
-            )
+        await conversation_crud.update_completed_turn_and_session(session.id, turn.id)
         await self.event_broker.emit(session.id, turn.id, "turn.completed")
 
     async def _finish_failed(self, session_id: str, turn_id: str, exc: Exception) -> None:
         logger.exception("Core task failed for turn {}", turn_id)
-        async with self.session_factory() as db:
-            await conversation_crud.update_failed_turn_by_id(db, turn_id, exc)
+        await conversation_crud.update_failed_turn_by_id(turn_id, exc)
         await self.event_broker.emit(
             session_id,
             turn_id,
@@ -481,13 +461,11 @@ class ConversationWorkflow:
         )
 
     async def _finish_cancelled(self, session_id: str, turn_id: str) -> None:
-        async with self.session_factory() as db:
-            await conversation_crud.update_cancelled_turn_by_id(db, turn_id)
+        await conversation_crud.update_cancelled_turn_by_id(turn_id)
         await self.event_broker.emit(session_id, turn_id, "turn.cancelled")
 
     async def _prepare_restart(self, session_id: str, turn_id: str) -> None:
-        async with self.session_factory() as db:
-            await conversation_crud.update_turn_for_restart_by_id(db, turn_id)
+        await conversation_crud.update_turn_for_restart_by_id(turn_id)
         await self.event_broker.emit(
             session_id,
             turn_id,
@@ -515,30 +493,24 @@ class ConversationWorkflow:
     async def _set_task_status(
         self, turn_id: str, field: str, status: TaskStatus
     ) -> None:
-        async with self.session_factory() as db:
-            await conversation_crud.update_turn_task_status_by_id(
-                db, turn_id, field, status
-            )
+        await conversation_crud.update_turn_task_status_by_id(turn_id, field, status)
 
     async def _maybe_update_summary(
         self, session: ConversationSession, turn: Turn
     ) -> None:
-        async with self.session_factory() as db:
-            context = await conversation_crud.select_summary_context_by_session_id(
-                db,
-                session.id,
-                self.config.CONTEXT_SUMMARY_TRIGGER_TURNS,
-                self.config.CONTEXT_RECENT_TURNS,
-            )
+        context = await conversation_crud.select_summary_context_by_session_id(
+            session.id,
+            self.config.CONTEXT_SUMMARY_TRIGGER_TURNS,
+            self.config.CONTEXT_RECENT_TURNS,
+        )
         if context is None:
             return
         old_summary, summarize, last_index = context
         try:
             summary = await self._generate_summary(session, turn, old_summary, summarize)
-            async with self.session_factory() as db:
-                await conversation_crud.update_session_summary_by_id(
-                    db, session.id, summary.strip(), last_index
-                )
+            await conversation_crud.update_session_summary_by_id(
+                session.id, summary.strip(), last_index
+            )
         except Exception as exc:
             logger.warning("Summary update failed for session {}: {}", session.id, exc)
 
@@ -554,10 +526,7 @@ class ConversationWorkflow:
         return await self.llm.complete(self.prompts.summary(old_summary, summarize))
 
     async def retry_auxiliary(self, turn_id: str, task: AuxiliaryTask) -> None:
-        async with self.session_factory() as db:
-            session, turn = await conversation_crud.select_retry_context_by_turn_id(
-                db, turn_id
-            )
+        session, turn = await conversation_crud.select_retry_context_by_turn_id(turn_id)
         assistant_text = turn.assistant_text
         assert assistant_text is not None
 

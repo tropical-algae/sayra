@@ -3,12 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sayra.common.datetime import utc_now
+from sayra.common.decorators import with_db_session
 from sayra.common.identifiers import IdType, new_id
 from sayra.core.db.models import AudioAsset, ConversationSession, Turn
 from sayra.core.enums import ACTIVE_TURN_STATUSES, SessionStatus, TurnStatus
 from sayra.core.exceptions import ConflictError, InvalidStateError, NotFoundError
 
 
+@with_db_session
 async def insert_transcription_turn(
     db: AsyncSession, session_id: str, turn_id: str
 ) -> ConversationSession:
@@ -46,11 +48,13 @@ async def insert_transcription_turn(
     return session
 
 
+@with_db_session
 async def insert_recording_asset(db: AsyncSession, asset: AudioAsset) -> None:
     db.add(asset)
     await db.commit()
 
 
+@with_db_session
 async def update_transcription_result_by_turn_id(
     db: AsyncSession,
     turn_id: str,
@@ -79,6 +83,7 @@ async def update_transcription_result_by_turn_id(
     return detailed
 
 
+@with_db_session
 async def update_failed_transcription_by_turn_id(
     db: AsyncSession, turn_id: str, error: BaseException
 ) -> None:

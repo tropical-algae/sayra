@@ -1,5 +1,4 @@
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from sayra.common.datetime import utc_now
 from sayra.common.identifiers import IdType, new_id
@@ -10,12 +9,11 @@ from sayra.core.exceptions import ProviderError, SayraError
 from sayra.core.types import FileStorage, SpeechRequest, TTSProvider
 
 
-async def get_audio(db: AsyncSession, audio_id: str) -> AudioAsset:
-    return await audio_crud.select_ready_audio_by_id(db, audio_id)
+async def get_audio(audio_id: str) -> AudioAsset:
+    return await audio_crud.select_ready_audio_by_id(audio_id)
 
 
 async def generate_suggestion_audio(
-    db: AsyncSession,
     storage: FileStorage,
     tts: TTSProvider,
     turn_id: str,
@@ -26,9 +24,7 @@ async def generate_suggestion_audio(
         turn,
         session,
         audio_asset,
-    ) = await audio_crud.select_suggestion_audio_context_by_ids(
-        db, turn_id, suggestion_id
-    )
+    ) = await audio_crud.select_suggestion_audio_context_by_ids(turn_id, suggestion_id)
     if audio_asset:
         return audio_asset
     if session is None:
@@ -62,7 +58,7 @@ async def generate_suggestion_audio(
         created_at=utc_now(),
     )
     try:
-        return await audio_crud.insert_suggestion_audio(db, suggestion_id, audio)
+        return await audio_crud.insert_suggestion_audio(suggestion_id, audio)
     except Exception:
         try:
             await storage.delete(stored.file_path)

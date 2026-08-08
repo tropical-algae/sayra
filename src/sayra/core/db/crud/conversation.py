@@ -4,10 +4,12 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sayra.common.datetime import utc_now
+from sayra.common.decorators import with_db_session
 from sayra.core.db.models import AudioAsset, ConversationSession, SuggestedReply, Turn
 from sayra.core.enums import AudioAssetType, TaskStatus, TurnStatus
 
 
+@with_db_session
 async def update_turn_for_workflow_start_by_id(
     db: AsyncSession, turn_id: str, recent_turns: int
 ) -> tuple[ConversationSession, Turn, list[Turn], list[str]]:
@@ -78,6 +80,7 @@ async def update_turn_for_workflow_start_by_id(
     return session, turn, history, stale_paths
 
 
+@with_db_session
 async def update_turn_reply_by_id(db: AsyncSession, turn_id: str, text: str) -> None:
     turn = await db.get(Turn, turn_id)
     if turn:
@@ -86,6 +89,7 @@ async def update_turn_reply_by_id(db: AsyncSession, turn_id: str, text: str) -> 
         await db.commit()
 
 
+@with_db_session
 async def insert_assistant_audio_and_update_turn(
     db: AsyncSession, turn_id: str, asset: AudioAsset
 ) -> None:
@@ -96,6 +100,7 @@ async def insert_assistant_audio_and_update_turn(
     await db.commit()
 
 
+@with_db_session
 async def update_turn_translation_by_id(
     db: AsyncSession, turn_id: str, text: str
 ) -> None:
@@ -106,6 +111,7 @@ async def update_turn_translation_by_id(
         await db.commit()
 
 
+@with_db_session
 async def insert_suggestions_and_update_turn(
     db: AsyncSession, turn_id: str, suggestions: Sequence[SuggestedReply]
 ) -> None:
@@ -116,6 +122,7 @@ async def insert_suggestions_and_update_turn(
     await db.commit()
 
 
+@with_db_session
 async def update_turn_guidance_by_id(
     db: AsyncSession, turn_id: str, result: dict[str, object]
 ) -> None:
@@ -129,6 +136,7 @@ async def update_turn_guidance_by_id(
         await db.commit()
 
 
+@with_db_session
 async def update_completed_turn_and_session(
     db: AsyncSession, session_id: str, turn_id: str
 ) -> None:
@@ -142,6 +150,7 @@ async def update_completed_turn_and_session(
     await db.commit()
 
 
+@with_db_session
 async def update_failed_turn_by_id(
     db: AsyncSession, turn_id: str, error: Exception
 ) -> None:
@@ -155,6 +164,7 @@ async def update_failed_turn_by_id(
         await db.commit()
 
 
+@with_db_session
 async def update_cancelled_turn_by_id(db: AsyncSession, turn_id: str) -> None:
     turn = await db.get(Turn, turn_id)
     if turn:
@@ -163,6 +173,7 @@ async def update_cancelled_turn_by_id(db: AsyncSession, turn_id: str) -> None:
         await db.commit()
 
 
+@with_db_session
 async def update_turn_for_restart_by_id(db: AsyncSession, turn_id: str) -> None:
     turn = await db.get(Turn, turn_id)
     if turn:
@@ -175,6 +186,7 @@ async def update_turn_for_restart_by_id(db: AsyncSession, turn_id: str) -> None:
         await db.commit()
 
 
+@with_db_session
 async def update_turn_task_status_by_id(
     db: AsyncSession, turn_id: str, field: str, status: TaskStatus
 ) -> None:
@@ -184,6 +196,7 @@ async def update_turn_task_status_by_id(
         await db.commit()
 
 
+@with_db_session
 async def select_summary_context_by_session_id(
     db: AsyncSession, session_id: str, trigger_turns: int, recent_turns: int
 ) -> tuple[str | None, list[Turn], int] | None:
@@ -214,6 +227,7 @@ async def select_summary_context_by_session_id(
     return session.conversation_summary, summarize, summarize[-1].turn_index
 
 
+@with_db_session
 async def update_session_summary_by_id(
     db: AsyncSession, session_id: str, summary: str, until_index: int
 ) -> None:
@@ -224,6 +238,7 @@ async def update_session_summary_by_id(
         await db.commit()
 
 
+@with_db_session
 async def select_retry_context_by_turn_id(
     db: AsyncSession, turn_id: str
 ) -> tuple[ConversationSession, Turn]:
