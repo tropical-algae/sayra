@@ -1,10 +1,8 @@
 import asyncio
-import json
 from collections.abc import Awaitable
 from typing import TypeVar
 
 import json_repair
-from llama_index.core.workflow import StartEvent, StopEvent, Workflow, step
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -12,6 +10,7 @@ from sayra.common.config import Settings
 from sayra.common.datetime import utc_now
 from sayra.common.identifiers import IdType, new_id
 from sayra.core.db.crud import conversation as conversation_crud
+from sayra.core.db.crud import runtime as runtime_crud
 from sayra.core.db.models import (
     AudioAsset,
     ConversationSession,
@@ -25,7 +24,6 @@ from sayra.core.enums import (
     ConversationMode,
     TaskStatus,
     TraceStep,
-    TurnStatus,
 )
 from sayra.core.exceptions import ProviderError
 from sayra.core.prompts.loader import PromptBuilder
@@ -42,8 +40,8 @@ from sayra.core.workflow.tracing import TraceRecorder
 T = TypeVar("T")
 
 
-class ConversationWorkflow(Workflow):
-    """Deterministic orchestration for a submitted Sayra turn."""
+class ConversationWorkflow:
+    """Owns deterministic turn execution and its background task lifecycle."""
 
     def __init__(
         self,
@@ -55,7 +53,6 @@ class ConversationWorkflow(Workflow):
         prompts: PromptBuilder,
         config: Settings,
     ) -> None:
-        super().__init__(timeout=None, verbose=False)
         self.session_factory = session_factory
         self.llm = llm
         self.tts = tts
@@ -64,14 +61,80 @@ class ConversationWorkflow(Workflow):
         self.config = config
         self.prompts = prompts
         self.traces = TraceRecorder(session_factory)
+        self._tasks: dict[str, asyncio.Task[None]] = {}
         self._preserve_on_cancel: set[str] = set()
+
+    def start(self, turn_id: str) -> None:
+        existing = self._tasks.get(turn_id)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(self._run(turn_id), name=f"turn:{turn_id}")
+        self._tasks[turn_id] = task
+        task.add_done_callback(lambda completed: self._forget(turn_id, completed))
+
+    def start_retry(self, turn_id: str, task_name: AuxiliaryTask) -> None:
+        key = f"{turn_id}:retry:{task_name.value}"
+        existing = self._tasks.get(key)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._run_retry(turn_id, task_name),
+            name=f"retry:{task_name.value}:{turn_id}",
+        )
+        self._tasks[key] = task
+        task.add_done_callback(lambda completed: self._forget(key, completed))
+
+    def _forget(self, key: str, completed: asyncio.Task[None]) -> None:
+        if self._tasks.get(key) is completed:
+            self._tasks.pop(key, None)
+
+    async def recover(self) -> None:
+        """Recover durable turn state before the API starts accepting traffic."""
+        async with self.session_factory() as db:
+            turn_ids = await runtime_crud.update_interrupted_tasks_and_select_recoverable_turn_ids(
+                db
+            )
+        for turn_id in turn_ids:
+            self.start(turn_id)
+
+    async def _run(self, turn_id: str) -> None:
+        try:
+            await self.execute_turn(turn_id)
+        except Exception:
+            logger.exception("Uncaught conversation error for turn {}", turn_id)
+
+    async def _run_retry(self, turn_id: str, task_name: AuxiliaryTask) -> None:
+        try:
+            await self.retry_auxiliary(turn_id, task_name)
+        except Exception:
+            logger.exception(
+                "Auxiliary retry {} failed for turn {}", task_name.value, turn_id
+            )
+
+    async def cancel(self, turn_id: str) -> bool:
+        task = self._tasks.get(turn_id)
+        if not task or task.done():
+            return False
+        task.cancel()
+        return True
+
+    async def shutdown(self, grace_seconds: float) -> None:
+        if not self._tasks:
+            return
+        _, pending = await asyncio.wait(self._tasks.values(), timeout=grace_seconds)
+        task_keys = {task: key for key, task in self._tasks.items()}
+        for task in pending:
+            key = task_keys.get(task, "")
+            if ":retry:" not in key:
+                self.preserve_for_restart(key)
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def preserve_for_restart(self, turn_id: str) -> None:
         self._preserve_on_cancel.add(turn_id)
 
-    @step
-    async def execute_turn(self, event: StartEvent) -> StopEvent:
-        turn_id = str(event.get("turn_id"))
+    async def execute_turn(self, turn_id: str) -> dict[str, str]:
         session, turn, history = await self._start_turn(turn_id)
         await self.event_broker.emit(
             session.id, turn.id, "turn.started", {"status": "processing"}
@@ -93,7 +156,7 @@ class ConversationWorkflow(Workflow):
             raise
         except Exception as exc:
             await self._finish_failed(session.id, turn.id, exc)
-            return StopEvent(result={"turn_id": turn.id, "status": "failed"})
+            return {"turn_id": turn.id, "status": "failed"}
 
         auxiliary_tasks = [
             self._run_traced(
@@ -142,7 +205,7 @@ class ConversationWorkflow(Workflow):
             else:
                 await self._finish_cancelled(session.id, turn.id)
             raise
-        return StopEvent(result={"turn_id": turn.id, "status": "completed"})
+        return {"turn_id": turn.id, "status": "completed"}
 
     async def _start_turn(
         self, turn_id: str

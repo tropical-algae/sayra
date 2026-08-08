@@ -1,25 +1,9 @@
-import re
 from pathlib import Path, PurePosixPath
-
-_SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
-_AUDIO_EXTENSIONS = frozenset({"webm", "wav", "mp3", "ogg", "opus"})
 
 
 def ensure_directory(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def safe_component(value: str, fallback: str = "file") -> str:
-    cleaned = _SAFE_COMPONENT.sub("-", value.strip()).strip(".-")
-    return cleaned or fallback
-
-
-def audio_extension(filename: str | None) -> str:
-    if not filename or "." not in filename:
-        return "webm"
-    extension = safe_component(filename.rsplit(".", 1)[-1].lower(), "bin")
-    return extension if extension in _AUDIO_EXTENSIONS else "bin"
 
 
 def normalize_relative_path(value: str) -> str:

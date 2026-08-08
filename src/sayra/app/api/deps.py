@@ -1,14 +1,15 @@
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import HTTPConnection
 
 from sayra.app.container import AppContainer
 
 
-def get_container(request: Request) -> AppContainer:
-    return request.app.state.container
+def get_container(connection: HTTPConnection) -> AppContainer:
+    return connection.app.state.container
 
 
 Container = Annotated[AppContainer, Depends(get_container)]

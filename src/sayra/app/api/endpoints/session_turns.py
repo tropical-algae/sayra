@@ -70,7 +70,7 @@ async def submit_turn(
 ):
     return await turn_service.submit_turn(
         db,
-        container.runtime,
+        container.workflow,
         session_id,
         data.submitted_text,
         turn_id,

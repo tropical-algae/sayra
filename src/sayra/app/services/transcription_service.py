@@ -6,7 +6,6 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sayra.common.datetime import utc_now
-from sayra.common.files import audio_extension
 from sayra.common.identifiers import IdType, new_id
 from sayra.core.db.crud import transcription as transcription_crud
 from sayra.core.db.models import AudioAsset, Turn
@@ -33,26 +32,10 @@ async def transcribe_turn(
 
     turn_id = new_id(IdType.TURN)
     session = await transcription_crud.insert_transcription_turn(db, session_id, turn_id)
-    file_path = f"sessions/{session_id}/turns/{turn_id}/user.{audio_extension(filename)}"
+    file_path = f"sessions/{session_id}/turns/{turn_id}/user.wav"
     stored = None
     recording_persisted = False
     try:
-        stored = await container.storage.put(file_path, audio, content_type)
-        asset = AudioAsset(
-            id=new_id(IdType.AUDIO_ASSET),
-            session_id=session_id,
-            turn_id=turn_id,
-            asset_type=AudioAssetType.USER_RECORDING,
-            file_path=stored.file_path,
-            content_type=stored.content_type,
-            size_bytes=stored.size_bytes,
-            status=AudioAssetStatus.READY,
-            checksum_sha256=stored.checksum_sha256,
-            created_at=utc_now(),
-        )
-        await transcription_crud.insert_recording_asset(db, asset)
-        recording_persisted = True
-
         traces = container.workflow.traces
         async with traces.track(
             session_id,
@@ -63,6 +46,25 @@ async def transcribe_turn(
             normalized = await container.audio_normalizer.normalize(
                 AudioInput(content=audio, content_type=content_type, filename=filename)
             )
+            stored = await container.storage.put(
+                file_path,
+                normalized.content,
+                normalized.content_type,
+            )
+            asset = AudioAsset(
+                id=new_id(IdType.AUDIO_ASSET),
+                session_id=session_id,
+                turn_id=turn_id,
+                asset_type=AudioAssetType.USER_RECORDING,
+                file_path=stored.file_path,
+                content_type=stored.content_type,
+                size_bytes=stored.size_bytes,
+                status=AudioAssetStatus.READY,
+                checksum_sha256=stored.checksum_sha256,
+                created_at=utc_now(),
+            )
+            await transcription_crud.insert_recording_asset(db, asset)
+            recording_persisted = True
             result = await container.asr.transcribe(normalized, session.target_language)
             await traces.annotate(
                 trace_id,
@@ -101,7 +103,7 @@ async def transcribe_turn(
             session.transcript_auto_submit,
         )
         if session.transcript_auto_submit:
-            container.runtime.start(turn_id)
+            container.workflow.start(turn_id)
         return turn, transcript, session.transcript_auto_submit
     except Exception as exc:
         if stored and not recording_persisted:

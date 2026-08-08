@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     VOLCENGINE_APP_ID: str = ""
     VOLCENGINE_ACCESS_TOKEN: SecretStr = SecretStr("")
     VOLCENGINE_ASR_URL: str = (
-        "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+        "https://openspeech.bytedance.com//api/v3/auc/bigmodel/recognize/flash"
     )
     VOLCENGINE_TTS_URL: str = "wss://openspeech.bytedance.com/api/v1/tts/ws_binary"
     VOLCENGINE_ASR_RESOURCE_ID: str = "volc.bigasr.auc_turbo"

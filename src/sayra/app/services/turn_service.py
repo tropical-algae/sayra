@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sayra.core.db.crud import turn as turn_crud
 from sayra.core.db.models import Trace, Turn
 from sayra.core.enums import AuxiliaryTask
-from sayra.core.workflow.runtime import WorkflowRuntime
+from sayra.core.workflow.workflow import ConversationWorkflow
 
 
 async def get_turn(db: AsyncSession, session_id: str, turn_id: str) -> Turn:
@@ -24,7 +24,7 @@ async def list_traces(db: AsyncSession, turn_id: str) -> Sequence[Trace]:
 
 async def submit_turn(
     db: AsyncSession,
-    runtime: WorkflowRuntime,
+    workflow: ConversationWorkflow,
     session_id: str,
     submitted_text: str,
     turn_id: str | None = None,
@@ -34,16 +34,16 @@ async def submit_turn(
         db, session_id, submitted_text, turn_id, client_request_id
     )
     if should_start:
-        runtime.start(turn.id)
+        workflow.start(turn.id)
     return turn
 
 
 async def retry_auxiliary(
     db: AsyncSession,
-    runtime: WorkflowRuntime,
+    workflow: ConversationWorkflow,
     turn_id: str,
     task: AuxiliaryTask,
 ) -> Turn:
     turn = await turn_crud.update_turn_for_auxiliary_retry_by_id(db, turn_id, task)
-    runtime.start_retry(turn_id, task)
+    workflow.start_retry(turn_id, task)
     return turn

@@ -1,5 +1,4 @@
 import asyncio
-from typing import ClassVar
 
 from sayra.common.config import Settings
 from sayra.core.exceptions import ProviderError
@@ -9,21 +8,10 @@ from sayra.core.types import AudioInput
 class FFmpegAudioNormalizer:
     """Converts browser recording formats into mono 16 kHz WAV for ASR."""
 
-    ASR_READY_CONTENT_TYPES: ClassVar[set[str]] = {
-        "audio/wav",
-        "audio/x-wav",
-        "audio/mpeg",
-        "audio/mp3",
-        "audio/ogg",
-    }
-
     def __init__(self, config: Settings) -> None:
         self.timeout = config.AUDIO_CONVERSION_TIMEOUT_SECONDS
 
     async def normalize(self, audio: AudioInput) -> AudioInput:
-        content_type = audio.content_type.partition(";")[0].lower()
-        if content_type in self.ASR_READY_CONTENT_TYPES:
-            return audio
         process = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-hide_banner",
@@ -36,6 +24,8 @@ class FFmpegAudioNormalizer:
             "1",
             "-ar",
             "16000",
+            "-c:a",
+            "pcm_s16le",
             "-f",
             "wav",
             "pipe:1",

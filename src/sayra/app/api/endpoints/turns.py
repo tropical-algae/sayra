@@ -17,7 +17,7 @@ router = APIRouter()
 async def retry_auxiliary_task(
     turn_id: str, task: AuxiliaryTask, db: DbSession, container: Container
 ):
-    return await turn_service.retry_auxiliary(db, container.runtime, turn_id, task)
+    return await turn_service.retry_auxiliary(db, container.workflow, turn_id, task)
 
 
 @router.get("/{turn_id}/traces", response_model=list[TraceResponse])

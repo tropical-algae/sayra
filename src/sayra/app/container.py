@@ -9,9 +9,8 @@ from sayra.core.speech.asr import VolcengineASRProvider
 from sayra.core.speech.audio import FFmpegAudioNormalizer
 from sayra.core.speech.tts import VolcengineTTSProvider
 from sayra.core.storage.factory import create_storage
-from sayra.core.workflow.conversation import ConversationWorkflow
 from sayra.core.workflow.events import EventBroker
-from sayra.core.workflow.runtime import WorkflowRuntime
+from sayra.core.workflow.workflow import ConversationWorkflow
 
 
 class AppContainer:
@@ -45,19 +44,18 @@ class AppContainer:
             prompts=self.prompts,
             config=config,
         )
-        self.runtime = WorkflowRuntime(self.workflow)
 
     async def startup(self) -> None:
         await init_db_models(self.engine)
         if self.config.STARTUP_CHECK_STORAGE:
             await self.storage.initialize()
-        await self.runtime.recover()
+        await self.workflow.recover()
         if self.config.RETRY_FAILED_DELETIONS_ON_STARTUP:
             await retry_failed_session_deletions(self)
 
     async def shutdown(self) -> None:
         try:
-            await self.runtime.shutdown(self.config.TASK_SHUTDOWN_GRACE_SECONDS)
+            await self.workflow.shutdown(self.config.TASK_SHUTDOWN_GRACE_SECONDS)
         finally:
             try:
                 await self.asr.close()

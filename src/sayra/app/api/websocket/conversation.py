@@ -4,7 +4,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 from pydantic import ValidationError
 
-from sayra.app.container import AppContainer
+from sayra.app.api.deps import Container
 from sayra.app.schemas.websocket import ClientEvent, ServerEvent
 from sayra.app.services import turn_service
 from sayra.core.exceptions import SayraError
@@ -13,9 +13,12 @@ router = APIRouter()
 
 
 @router.websocket("/{session_id}/conversation")
-async def conversation_socket(websocket: WebSocket, session_id: str) -> None:
+async def conversation_socket(
+    websocket: WebSocket,
+    session_id: str,
+    container: Container,
+) -> None:
     await websocket.accept()
-    container: AppContainer = websocket.app.state.container
     send_lock = asyncio.Lock()
     subscriptions: dict[str, asyncio.Task] = {}
 
@@ -41,7 +44,7 @@ async def conversation_socket(websocket: WebSocket, session_id: str) -> None:
             if subscriptions.get(turn_id) is completed:
                 subscriptions.pop(turn_id, None)
             if not completed.cancelled() and (error := completed.exception()):
-                logger.debug("WebSocket subscription {} ended: {}", turn_id, error)
+                logger.debug(f"WebSocket subscription {turn_id} ended: {error}")
 
         task.add_done_callback(subscription_done)
 
@@ -65,7 +68,7 @@ async def conversation_socket(websocket: WebSocket, session_id: str) -> None:
                             continue
                         turn = await turn_service.submit_turn(
                             db,
-                            container.runtime,
+                            container.workflow,
                             session_id,
                             client_event.submitted_text,
                             client_event.turn_id,
@@ -85,7 +88,7 @@ async def conversation_socket(websocket: WebSocket, session_id: str) -> None:
                             await send_protocol_error("turn_id is required")
                             continue
                         await turn_service.get_turn(db, session_id, client_event.turn_id)
-                        if not await container.runtime.cancel(client_event.turn_id):
+                        if not await container.workflow.cancel(client_event.turn_id):
                             await send_protocol_error("turn is not running")
             except SayraError as exc:
                 await send_protocol_error(str(exc))
