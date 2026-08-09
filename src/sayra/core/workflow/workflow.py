@@ -76,6 +76,18 @@ class ConversationWorkflow:
         self._tasks[key] = task
         task.add_done_callback(lambda completed: self._forget(key, completed))
 
+    def start_suggestions(self, turn_id: str) -> None:
+        key = f"{turn_id}:retry:{AuxiliaryTask.SUGGESTIONS.value}"
+        existing = self._tasks.get(key)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._run_suggestions(turn_id),
+            name=f"suggestions:{turn_id}",
+        )
+        self._tasks[key] = task
+        task.add_done_callback(lambda completed: self._forget(key, completed))
+
     def _forget(self, key: str, completed: asyncio.Task[None]) -> None:
         if self._tasks.get(key) is completed:
             self._tasks.pop(key, None)
@@ -101,6 +113,12 @@ class ConversationWorkflow:
             logger.exception(
                 "Auxiliary retry {} failed for turn {}", task_name.value, turn_id
             )
+
+    async def _run_suggestions(self, turn_id: str) -> None:
+        try:
+            await self.generate_suggestions(turn_id)
+        except Exception:
+            logger.exception("Suggestion generation failed for turn {}", turn_id)
 
     async def cancel(self, turn_id: str) -> bool:
         task = self._tasks.get(turn_id)
@@ -145,7 +163,6 @@ class ConversationWorkflow:
 
         auxiliary_tasks = [
             self._generate_translation(session, turn, assistant_text),
-            self._generate_suggestions(session, turn, assistant_text),
         ]
         if session.conversation_mode == ConversationMode.GUIDED:
             auxiliary_tasks.append(self._generate_guidance(session, turn))
@@ -156,6 +173,8 @@ class ConversationWorkflow:
         try:
             await asyncio.gather(*auxiliary_tasks, return_exceptions=True)
             await self._complete_turn(session, turn)
+            if session.suggestions_auto_generate and session.suggestion_count > 0:
+                self.start_suggestions(turn.id)
             await self._maybe_update_summary(session, turn)
         except asyncio.CancelledError:
             if turn.id in self._preserve_on_cancel:
@@ -545,13 +564,34 @@ class ConversationWorkflow:
             await self._generate_audio(session, turn, queue)
         elif task == AuxiliaryTask.TRANSLATION:
             await self._generate_translation(session, turn, assistant_text)
-        elif task == AuxiliaryTask.SUGGESTIONS:
-            await self._generate_suggestions(session, turn, assistant_text)
         elif task == AuxiliaryTask.GUIDANCE:
             await self._generate_guidance(session, turn)
+        else:
+            raise ValueError(f"Unsupported auxiliary retry task: {task.value}")
         await self.event_broker.emit(
             session.id,
             turn.id,
             "turn.auxiliary_retry.completed",
             {"task": task.value},
+        )
+
+    async def generate_suggestions(self, turn_id: str) -> None:
+        session, turn = await conversation_crud.select_retry_context_by_turn_id(turn_id)
+        assistant_text = turn.assistant_text
+        assert assistant_text is not None
+        try:
+            await self._generate_suggestions(session, turn, assistant_text)
+        except Exception:
+            await self.event_broker.emit(
+                session.id,
+                turn.id,
+                "turn.auxiliary.failed",
+                {"task": AuxiliaryTask.SUGGESTIONS.value},
+            )
+            raise
+        await self.event_broker.emit(
+            session.id,
+            turn.id,
+            "turn.auxiliary.completed",
+            {"task": AuxiliaryTask.SUGGESTIONS.value},
         )

@@ -73,6 +73,12 @@ class AuxiliaryTask(StrEnum):
     GUIDANCE = "guidance"
 
 
+class RetryableAuxiliaryTask(StrEnum):
+    AUDIO = "audio"
+    TRANSLATION = "translation"
+    GUIDANCE = "guidance"
+
+
 class AudioAssetType(StrEnum):
     USER_RECORDING = "user_recording"
     ASSISTANT_REPLY = "assistant_reply"

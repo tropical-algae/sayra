@@ -26,18 +26,22 @@ async def conversation_socket(
         async with send_lock:
             await websocket.send_json(event.model_dump(mode="json"))
 
-    async def subscribe(turn_id: str, after_sequence: int) -> None:
+    async def subscribe(
+        turn_id: str, after_sequence: int, auxiliary: bool = False
+    ) -> None:
         async for event in container.events.subscribe(
-            session_id, turn_id, after_sequence
+            session_id, turn_id, after_sequence, auxiliary=auxiliary
         ):
             await send(event)
 
-    async def start_subscription(turn_id: str, after_sequence: int) -> None:
+    async def start_subscription(
+        turn_id: str, after_sequence: int, auxiliary: bool = False
+    ) -> None:
         previous = subscriptions.get(turn_id)
         if previous and not previous.done():
             previous.cancel()
             await asyncio.gather(previous, return_exceptions=True)
-        task = asyncio.create_task(subscribe(turn_id, after_sequence))
+        task = asyncio.create_task(subscribe(turn_id, after_sequence, auxiliary))
         subscriptions[turn_id] = task
 
         def subscription_done(completed: asyncio.Task) -> None:
@@ -79,7 +83,9 @@ async def conversation_socket(
                         continue
                     await turn_service.get_turn(session_id, client_event.turn_id)
                     await start_subscription(
-                        client_event.turn_id, client_event.after_sequence
+                        client_event.turn_id,
+                        client_event.after_sequence,
+                        auxiliary=client_event.phase == "auxiliary",
                     )
                 elif client_event.type == "turn.cancel":
                     if not client_event.turn_id:

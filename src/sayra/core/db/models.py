@@ -55,6 +55,9 @@ class ConversationSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     topic: Mapped[str] = mapped_column(String(500), nullable=False)
     conversation_mode: Mapped[ConversationMode] = enum_column(ConversationMode)
     suggestion_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    suggestions_auto_generate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     voice_id: Mapped[str] = mapped_column(String(128), nullable=False)
     transcript_refinement_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

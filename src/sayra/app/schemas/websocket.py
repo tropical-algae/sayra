@@ -7,6 +7,7 @@ from sayra.core.workflow.events import ServerEvent
 
 class ClientEvent(BaseModel):
     type: Literal["turn.submit", "turn.subscribe", "turn.cancel"]
+    phase: Literal["turn", "auxiliary"] = "turn"
     turn_id: str | None = None
     submitted_text: str | None = Field(default=None, max_length=5000)
     client_request_id: str | None = Field(default=None, min_length=1, max_length=128)

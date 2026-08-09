@@ -1,8 +1,10 @@
 from collections.abc import Sequence
 
+from loguru import logger
+
 from sayra.core.db.crud import turn as turn_crud
 from sayra.core.db.models import Trace, Turn
-from sayra.core.enums import AuxiliaryTask
+from sayra.core.enums import AuxiliaryTask, RetryableAuxiliaryTask
 from sayra.core.workflow.workflow import ConversationWorkflow
 
 
@@ -38,8 +40,31 @@ async def submit_turn(
 async def retry_auxiliary(
     workflow: ConversationWorkflow,
     turn_id: str,
-    task: AuxiliaryTask,
+    task: RetryableAuxiliaryTask,
 ) -> Turn:
-    turn = await turn_crud.update_turn_for_auxiliary_retry_by_id(turn_id, task)
-    workflow.start_retry(turn_id, task)
+    auxiliary_task = AuxiliaryTask(task.value)
+    turn = await turn_crud.update_turn_for_auxiliary_retry_by_id(turn_id, auxiliary_task)
+    workflow.start_retry(turn_id, auxiliary_task)
+    return turn
+
+
+async def generate_suggestions(
+    workflow: ConversationWorkflow,
+    turn_id: str,
+    regenerate: bool,
+) -> Turn:
+    (
+        turn,
+        should_start,
+        stale_paths,
+    ) = await turn_crud.update_turn_for_suggestion_generation_by_id(turn_id, regenerate)
+    for file_path in stale_paths:
+        try:
+            await workflow.storage.delete(file_path)
+        except Exception as exc:  # noqa: PERF203
+            logger.warning(
+                "Failed to remove stale suggestion audio {}: {}", file_path, exc
+            )
+    if should_start:
+        workflow.start_suggestions(turn_id)
     return turn

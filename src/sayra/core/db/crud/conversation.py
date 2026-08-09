@@ -55,7 +55,11 @@ async def update_turn_for_workflow_start_by_id(
     turn.assistant_task_status = TaskStatus.RUNNING
     turn.audio_task_status = TaskStatus.PENDING
     turn.translation_task_status = TaskStatus.PENDING
-    turn.suggestions_task_status = TaskStatus.PENDING
+    turn.suggestions_task_status = (
+        TaskStatus.PENDING
+        if session.suggestions_auto_generate and session.suggestion_count > 0
+        else TaskStatus.SKIPPED
+    )
     turn.guidance_task_status = TaskStatus.PENDING
     history = list(
         (

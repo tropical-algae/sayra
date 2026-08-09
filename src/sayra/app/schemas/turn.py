@@ -59,6 +59,10 @@ class TurnSubmit(BaseModel):
     client_request_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class SuggestionGenerate(BaseModel):
+    regenerate: bool = False
+
+
 class TurnListResponse(BaseModel):
     items: list[TurnResponse]
     total: int

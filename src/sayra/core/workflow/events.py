@@ -88,6 +88,8 @@ class EventBroker:
             "turn.failed",
             "turn.cancelled",
             "turn.auxiliary_retry.completed",
+            "turn.auxiliary.completed",
+            "turn.auxiliary.failed",
         } or (event_type.startswith("assistant.") and event_type.endswith(".failed")):
             self._cleanup_handles[turn_id] = asyncio.get_running_loop().call_later(
                 self.audio_retention_seconds,
@@ -127,17 +129,34 @@ class EventBroker:
         self._conditions.pop(turn_id, None)
 
     async def subscribe(
-        self, session_id: str, turn_id: str, after_sequence: int
+        self,
+        session_id: str,
+        turn_id: str,
+        after_sequence: int,
+        *,
+        auxiliary: bool = False,
     ) -> AsyncIterator[ServerEvent]:
         sequence = after_sequence
-        terminal_types = {"turn.completed", "turn.failed", "turn.cancelled"}
+        terminal_types = (
+            {
+                "turn.auxiliary_retry.completed",
+                "turn.auxiliary.completed",
+                "turn.auxiliary.failed",
+            }
+            if auxiliary
+            else {"turn.completed", "turn.failed", "turn.cancelled"}
+        )
         while True:
             events = await self.list_after(turn_id, sequence)
             for event in events:
                 event.session_id = session_id
                 sequence = event.sequence
                 yield event
-                if event.type in terminal_types:
+                if event.type in terminal_types or (
+                    auxiliary
+                    and event.type.startswith("assistant.")
+                    and event.type.endswith(".failed")
+                ):
                     return
             if events:
                 continue

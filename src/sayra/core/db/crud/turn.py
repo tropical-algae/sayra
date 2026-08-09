@@ -1,15 +1,22 @@
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sayra.common.datetime import utc_now
 from sayra.common.decorators import with_db_session
 from sayra.common.identifiers import IdType, new_id
-from sayra.core.db.models import ConversationSession, Trace, Turn
+from sayra.core.db.models import (
+    AudioAsset,
+    ConversationSession,
+    SuggestedReply,
+    Trace,
+    Turn,
+)
 from sayra.core.enums import (
     ACTIVE_TURN_STATUSES,
+    AudioAssetType,
     AuxiliaryTask,
     SessionStatus,
     TaskStatus,
@@ -167,3 +174,62 @@ async def update_turn_for_auxiliary_retry_by_id(
     detailed = await db.scalar(_with_details(select(Turn).where(Turn.id == turn_id)))
     assert detailed is not None
     return detailed
+
+
+@with_db_session
+async def update_turn_for_suggestion_generation_by_id(
+    db: AsyncSession,
+    turn_id: str,
+    regenerate: bool,
+) -> tuple[Turn, bool, list[str]]:
+    turn = await db.scalar(
+        _with_details(select(Turn).where(Turn.id == turn_id).with_for_update())
+    )
+    if not turn:
+        raise NotFoundError(f"Turn {turn_id} does not exist")
+    if turn.status != TurnStatus.COMPLETED or not turn.assistant_text:
+        raise InvalidStateError(
+            "Suggestions can be generated only after the main reply completes"
+        )
+    session = await db.get(ConversationSession, turn.session_id)
+    if not session:
+        raise NotFoundError(f"Session {turn.session_id} does not exist")
+    if session.suggestion_count == 0:
+        raise InvalidStateError("Suggestions are disabled for this session")
+    if turn.suggestions_task_status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+        if regenerate:
+            raise ConflictError("Suggestions are already being generated")
+        return turn, False, []
+
+    suggestions = list(turn.suggestions)
+    if suggestions and not regenerate and len(suggestions) == session.suggestion_count:
+        if turn.suggestions_task_status != TaskStatus.COMPLETED:
+            turn.suggestions_task_status = TaskStatus.COMPLETED
+            await db.commit()
+        return turn, False, []
+
+    suggested_audio = list(
+        (
+            await db.scalars(
+                select(AudioAsset).where(
+                    AudioAsset.turn_id == turn_id,
+                    AudioAsset.asset_type == AudioAssetType.SUGGESTED_REPLY,
+                )
+            )
+        ).all()
+    )
+    stale_paths = [asset.file_path for asset in suggested_audio]
+    if suggestions:
+        await db.execute(delete(SuggestedReply).where(SuggestedReply.turn_id == turn_id))
+    if suggested_audio:
+        await db.execute(
+            delete(AudioAsset).where(
+                AudioAsset.turn_id == turn_id,
+                AudioAsset.asset_type == AudioAssetType.SUGGESTED_REPLY,
+            )
+        )
+    turn.suggestions_task_status = TaskStatus.PENDING
+    await db.commit()
+    detailed = await db.scalar(_with_details(select(Turn).where(Turn.id == turn_id)))
+    assert detailed is not None
+    return detailed, True, stale_paths
