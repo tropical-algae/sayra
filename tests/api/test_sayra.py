@@ -16,7 +16,9 @@ def test_api_routes_are_mounted_under_v1(client: TestClient) -> None:
     assert all(path.startswith("/api/v1/") for path in paths)
 
 
-def create_session(client: TestClient, *, guided: bool = True) -> dict:
+def create_session(
+    client: TestClient, *, guided: bool = True, suggestions_auto_generate: bool = False
+) -> dict:
     response = client.post(
         "/api/v1/sessions",
         json={
@@ -27,6 +29,7 @@ def create_session(client: TestClient, *, guided: bool = True) -> dict:
             "topic": "School life",
             "conversation_mode": "guided" if guided else "natural",
             "suggestion_count": 1,
+            "suggestions_auto_generate": suggestions_auto_generate,
             "voice_id": "test-voice",
             "transcript_refinement_enabled": True,
             "transcript_auto_submit": False,
@@ -47,6 +50,17 @@ def wait_for_turn(client: TestClient, session_id: str, turn_id: str) -> dict:
     raise AssertionError("turn did not finish")
 
 
+def wait_for_suggestions(client: TestClient, session_id: str, turn_id: str) -> dict:
+    for _ in range(100):
+        response = client.get(f"/api/v1/sessions/{session_id}/turns/{turn_id}")
+        assert response.status_code == 200
+        turn = response.json()
+        if turn["suggestions_task_status"] in {"completed", "failed"}:
+            return turn
+        time.sleep(0.02)
+    raise AssertionError("suggestions did not finish")
+
+
 def test_complete_transcription_and_conversation_flow(
     client: TestClient, container
 ) -> None:
@@ -63,6 +77,16 @@ def test_complete_transcription_and_conversation_flow(
     assert transcript["turn"]["raw_transcript"] == transcript["transcript"]
     assert transcript["turn"]["status"] == "awaiting_confirmation"
     assert not transcript["auto_submitted"]
+
+    user_audio = transcript["turn"]["audio_assets"][0]
+    assert user_audio["content_type"] == "audio/wav"
+    user_audio_path = next(
+        path for path in container.storage.objects if path.endswith("/user.wav")
+    )
+    assert container.storage.objects[user_audio_path] == b"wav:fake-webm"
+    assert container.asr.last_audio is not None
+    assert container.asr.last_audio.content == b"wav:fake-webm"
+    assert container.asr.last_audio.content_type == "audio/wav"
 
     parallel_draft = client.post(
         f"/api/v1/sessions/{session_id}/turns/transcribe",
@@ -87,8 +111,17 @@ def test_complete_transcription_and_conversation_flow(
     assert turn["guidance_corrected"] == "went"
     assert turn["assistant_task_status"] == "completed"
     assert turn["audio_task_status"] == "completed"
-    assert len(turn["suggestions"]) == 1
+    assert turn["suggestions_task_status"] == "skipped"
+    assert turn["suggestions"] == []
     assert len(turn["audio_assets"]) == 2
+
+    response = client.post(
+        f"/api/v1/turns/{turn_id}/suggestions", json={"regenerate": False}
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["suggestions_task_status"] == "pending"
+    turn = wait_for_suggestions(client, session_id, turn_id)
+    assert len(turn["suggestions"]) == 1
 
     async def persisted_event_types() -> list[str]:
         async with container.session_factory() as db:
@@ -174,6 +207,21 @@ def test_complete_transcription_and_conversation_flow(
                 break
         assert "assistant.text.delta" in event_types
         assert "assistant.audio.delta" in event_types
+        socket.send_json(
+            {
+                "type": "turn.subscribe",
+                "turn_id": turn_id,
+                "after_sequence": 0,
+                "phase": "auxiliary",
+            }
+        )
+        auxiliary_event_types = []
+        while True:
+            event = socket.receive_json()
+            auxiliary_event_types.append(event["type"])
+            if event["type"] == "turn.auxiliary.completed":
+                break
+        assert "assistant.suggestion.completed" in auxiliary_event_types
         socket.send_json({"type": "turn.cancel"})
         protocol_error = socket.receive_json()
         assert protocol_error["type"] == "protocol.error"
@@ -250,6 +298,64 @@ def test_failed_auxiliary_task_can_be_retried(client: TestClient, container) -> 
     assert [item["attempt"] for item in translation_traces] == [1, 2]
 
 
+def test_suggestions_can_be_reused_or_regenerated(client: TestClient) -> None:
+    session = create_session(client, guided=False)
+    session_id = session["id"]
+    draft = client.post(
+        f"/api/v1/sessions/{session_id}/turns/transcribe",
+        files={"audio": ("suggest.webm", b"suggest", "audio/webm")},
+    ).json()
+    turn_id = draft["turn"]["id"]
+    client.post(
+        f"/api/v1/sessions/{session_id}/turns/{turn_id}/submit",
+        json={"submitted_text": "Give me another way to say this."},
+    )
+    wait_for_turn(client, session_id, turn_id)
+
+    first = client.post(
+        f"/api/v1/turns/{turn_id}/suggestions", json={"regenerate": False}
+    )
+    assert first.status_code == 202
+    completed = wait_for_suggestions(client, session_id, turn_id)
+    first_id = completed["suggestions"][0]["id"]
+
+    reused = client.post(
+        f"/api/v1/turns/{turn_id}/suggestions", json={"regenerate": False}
+    )
+    assert reused.status_code == 202
+    assert reused.json()["suggestions"][0]["id"] == first_id
+
+    regenerated = client.post(
+        f"/api/v1/turns/{turn_id}/suggestions", json={"regenerate": True}
+    )
+    assert regenerated.status_code == 202
+    assert regenerated.json()["suggestions_task_status"] in {"pending", "completed"}
+    completed = wait_for_suggestions(client, session_id, turn_id)
+    assert completed["suggestions"][0]["id"] != first_id
+
+    assert client.post(f"/api/v1/turns/{turn_id}/retry/suggestions").status_code == 422
+
+
+def test_session_can_auto_generate_suggestions(client: TestClient) -> None:
+    session = create_session(client, guided=False, suggestions_auto_generate=True)
+    assert session["suggestions_auto_generate"] is True
+    session_id = session["id"]
+    draft = client.post(
+        f"/api/v1/sessions/{session_id}/turns/transcribe",
+        files={"audio": ("auto.webm", b"auto", "audio/webm")},
+    ).json()
+    turn_id = draft["turn"]["id"]
+    client.post(
+        f"/api/v1/sessions/{session_id}/turns/{turn_id}/submit",
+        json={"submitted_text": "I want some ideas."},
+    )
+
+    completed = wait_for_turn(client, session_id, turn_id)
+    assert completed["assistant_translation"]
+    suggested = wait_for_suggestions(client, session_id, turn_id)
+    assert len(suggested["suggestions"]) == 1
+
+
 def test_core_failure_releases_active_turn_constraint(
     client: TestClient, container
 ) -> None:
@@ -311,7 +417,7 @@ def test_refinement_failure_falls_back_to_raw_asr(client: TestClient, container)
 def test_restart_clears_only_regenerable_turn_outputs(
     client: TestClient, container
 ) -> None:
-    session = create_session(client)
+    session = create_session(client, suggestions_auto_generate=True)
     session_id = session["id"]
     draft = client.post(
         f"/api/v1/sessions/{session_id}/turns/transcribe",
@@ -322,7 +428,8 @@ def test_restart_clears_only_regenerable_turn_outputs(
         f"/api/v1/sessions/{session_id}/turns/{turn_id}/submit",
         json={"submitted_text": "Please recover this turn."},
     )
-    completed = wait_for_turn(client, session_id, turn_id)
+    wait_for_turn(client, session_id, turn_id)
+    completed = wait_for_suggestions(client, session_id, turn_id)
     assert completed["assistant_text"]
     assert completed["suggestions"]
 

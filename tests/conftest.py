@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import (
 
 from sayra.app.main import create_app
 from sayra.common.config import Settings
+from sayra.core.db import session as db_session
 from sayra.core.db.session import init_db_models
 from sayra.core.prompts.loader import PromptBuilder
 from sayra.core.types import (
@@ -21,19 +22,26 @@ from sayra.core.types import (
     StoredFile,
     TranscriptResult,
 )
-from sayra.core.workflow.conversation import ConversationWorkflow
 from sayra.core.workflow.events import EventBroker
-from sayra.core.workflow.runtime import WorkflowRuntime
+from sayra.core.workflow.workflow import ConversationWorkflow
 
 
 class FakeASR:
-    async def transcribe(self, _audio: AudioInput, _language) -> TranscriptResult:
+    def __init__(self) -> None:
+        self.last_audio: AudioInput | None = None
+
+    async def transcribe(self, audio: AudioInput, _language) -> TranscriptResult:
+        self.last_audio = audio
         return TranscriptResult("I go to school yesterday", "asr-request")
 
 
 class PassthroughAudioNormalizer:
     async def normalize(self, audio: AudioInput) -> AudioInput:
-        return audio
+        return AudioInput(
+            content=b"wav:" + audio.content,
+            content_type="audio/wav",
+            filename="normalized.wav",
+        )
 
 
 class FakeLLM:
@@ -125,13 +133,11 @@ class TestContainer:
         self.llm = FakeLLM()
         self.prompts = PromptBuilder(config.PROMPT_ROOT)
         self.events = EventBroker(
-            session_factory,
             config.LIVE_EVENT_BUFFER_SIZE,
             config.LIVE_AUDIO_EVENT_RETENTION_SECONDS,
             config.EVENT_REPLAY_BATCH_SIZE,
         )
         self.workflow = ConversationWorkflow(
-            session_factory,
             self.llm,
             self.tts,
             self.storage,
@@ -139,18 +145,17 @@ class TestContainer:
             self.prompts,
             config,
         )
-        self.runtime = WorkflowRuntime(self.workflow)
 
     async def startup(self) -> None:
         await init_db_models(self.engine)
 
     async def shutdown(self) -> None:
-        await self.runtime.shutdown(2)
+        await self.workflow.shutdown(2)
         await self.engine.dispose()
 
 
 @pytest.fixture(scope="session")
-def container(tmp_path_factory) -> TestContainer:
+def container(tmp_path_factory) -> Generator[TestContainer, None, None]:
     db_path = tmp_path_factory.mktemp("database") / "test.db"
     config = Settings(
         DATABASE_PATH=db_path,
@@ -164,7 +169,12 @@ def container(tmp_path_factory) -> TestContainer:
     session_factory = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False, autoflush=False
     )
-    return TestContainer(config, engine, session_factory)
+    original_session_factory = db_session.LocalSession
+    db_session.LocalSession = session_factory
+    try:
+        yield TestContainer(config, engine, session_factory)
+    finally:
+        db_session.LocalSession = original_session_factory
 
 
 @pytest.fixture(scope="session")

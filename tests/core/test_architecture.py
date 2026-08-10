@@ -48,6 +48,18 @@ def test_crud_functions_use_explicit_database_operation_names() -> None:
                 )
 
 
+def test_crud_functions_manage_optional_database_sessions() -> None:
+    for source in (PACKAGE_ROOT / "core" / "db" / "crud").glob("*.py"):
+        tree = ast.parse(source.read_text())
+        for node in tree.body:
+            if not isinstance(node, ast.AsyncFunctionDef) or node.name.startswith("_"):
+                continue
+            assert any(
+                isinstance(decorator, ast.Name) and decorator.id == "with_db_session"
+                for decorator in node.decorator_list
+            ), (source, node.name)
+
+
 def test_repeated_primitives_are_centralized_in_common() -> None:
     for layer in ("app", "core"):
         for source in (PACKAGE_ROOT / layer).rglob("*.py"):
