@@ -20,6 +20,7 @@ from sayra.core.enums import (
     AudioAssetType,
     AuxiliaryTask,
     ConversationMode,
+    ServerEventType,
     TaskStatus,
     TraceStep,
 )
@@ -146,7 +147,10 @@ class ConversationWorkflow:
     async def execute_turn(self, turn_id: str) -> dict[str, str]:
         session, turn, history = await self._start_turn(turn_id)
         await self.event_broker.emit(
-            session.id, turn.id, "turn.started", {"status": "processing"}
+            session.id,
+            turn.id,
+            ServerEventType.TURN_STARTED,
+            {"status": "processing"},
         )
         try:
             assistant_text = await self._generate_reply(session, turn, history)
@@ -227,7 +231,10 @@ class ConversationWorkflow:
             async for delta in self.llm.stream_reply(messages):
                 deltas.append(delta)
                 await self.event_broker.emit(
-                    session.id, turn.id, "assistant.text.delta", {"text": delta}
+                    session.id,
+                    turn.id,
+                    ServerEventType.ASSISTANT_TEXT_DELTA,
+                    {"text": delta},
                 )
                 for sentence in segmenter.feed(delta):
                     await speech_queue.put(sentence)
@@ -246,7 +253,10 @@ class ConversationWorkflow:
             raise ProviderError("LLM returned an empty assistant response")
         await conversation_crud.update_turn_reply_by_id(turn.id, text)
         await self.event_broker.emit(
-            session.id, turn.id, "assistant.text.completed", {"text": text}
+            session.id,
+            turn.id,
+            ServerEventType.ASSISTANT_TEXT_COMPLETED,
+            {"text": text},
         )
         await asyncio.gather(audio_task, return_exceptions=True)
         return text
@@ -259,7 +269,9 @@ class ConversationWorkflow:
         speech_queue: asyncio.Queue[str | None],
     ) -> None:
         await self._set_task_status(turn.id, "audio_task_status", TaskStatus.RUNNING)
-        await self.event_broker.emit(session.id, turn.id, "assistant.audio.started")
+        await self.event_broker.emit(
+            session.id, turn.id, ServerEventType.ASSISTANT_AUDIO_STARTED
+        )
         audio_parts: list[bytes] = []
         stored = None
         asset_persisted = False
@@ -278,7 +290,7 @@ class ConversationWorkflow:
                     await self.event_broker.emit(
                         session.id,
                         turn.id,
-                        "assistant.audio.delta",
+                        ServerEventType.ASSISTANT_AUDIO_DELTA,
                         {
                             "segment": segment_index,
                             "chunk": chunk.sequence,
@@ -317,13 +329,17 @@ class ConversationWorkflow:
                         cleanup_error,
                     )
             await self._auxiliary_failed(
-                session.id, turn.id, "audio_task_status", "assistant.audio.failed", exc
+                session.id,
+                turn.id,
+                "audio_task_status",
+                ServerEventType.ASSISTANT_AUDIO_FAILED,
+                exc,
             )
             raise
         await self._emit_auxiliary_completed(
             session.id,
             turn.id,
-            "assistant.audio.completed",
+            ServerEventType.ASSISTANT_AUDIO_COMPLETED,
             {"audio_id": asset_id},
         )
 
@@ -349,14 +365,14 @@ class ConversationWorkflow:
                 session.id,
                 turn.id,
                 "translation_task_status",
-                "assistant.translation.failed",
+                ServerEventType.ASSISTANT_TRANSLATION_FAILED,
                 exc,
             )
             raise
         await self._emit_auxiliary_completed(
             session.id,
             turn.id,
-            "assistant.translation.completed",
+            ServerEventType.ASSISTANT_TRANSLATION_COMPLETED,
             {"text": translation},
         )
 
@@ -411,13 +427,16 @@ class ConversationWorkflow:
                 session.id,
                 turn.id,
                 "suggestions_task_status",
-                "assistant.suggestion.failed",
+                ServerEventType.ASSISTANT_SUGGESTION_FAILED,
                 exc,
             )
             raise
         for item in response_items:
             await self._emit_auxiliary_completed(
-                session.id, turn.id, "assistant.suggestion.completed", item
+                session.id,
+                turn.id,
+                ServerEventType.ASSISTANT_SUGGESTION_COMPLETED,
+                item,
             )
 
     @traced(
@@ -439,19 +458,22 @@ class ConversationWorkflow:
                 session.id,
                 turn.id,
                 "guidance_task_status",
-                "assistant.guidance.failed",
+                ServerEventType.ASSISTANT_GUIDANCE_FAILED,
                 exc,
             )
             raise
         await self._emit_auxiliary_completed(
-            session.id, turn.id, "assistant.guidance.completed", result
+            session.id,
+            turn.id,
+            ServerEventType.ASSISTANT_GUIDANCE_COMPLETED,
+            result,
         )
 
     async def _emit_auxiliary_completed(
         self,
         session_id: str,
         turn_id: str,
-        event_type: str,
+        event_type: ServerEventType,
         data: dict,
     ) -> None:
         try:
@@ -467,7 +489,7 @@ class ConversationWorkflow:
     @traced(TraceStep.PERSISTENCE)
     async def _complete_turn(self, session: ConversationSession, turn: Turn) -> None:
         await conversation_crud.update_completed_turn_and_session(session.id, turn.id)
-        await self.event_broker.emit(session.id, turn.id, "turn.completed")
+        await self.event_broker.emit(session.id, turn.id, ServerEventType.TURN_COMPLETED)
 
     async def _finish_failed(self, session_id: str, turn_id: str, exc: Exception) -> None:
         logger.exception("Core task failed for turn {}", turn_id)
@@ -475,20 +497,20 @@ class ConversationWorkflow:
         await self.event_broker.emit(
             session_id,
             turn_id,
-            "turn.failed",
+            ServerEventType.TURN_FAILED,
             {"code": type(exc).__name__, "message": str(exc)},
         )
 
     async def _finish_cancelled(self, session_id: str, turn_id: str) -> None:
         await conversation_crud.update_cancelled_turn_by_id(turn_id)
-        await self.event_broker.emit(session_id, turn_id, "turn.cancelled")
+        await self.event_broker.emit(session_id, turn_id, ServerEventType.TURN_CANCELLED)
 
     async def _prepare_restart(self, session_id: str, turn_id: str) -> None:
         await conversation_crud.update_turn_for_restart_by_id(turn_id)
         await self.event_broker.emit(
             session_id,
             turn_id,
-            "turn.interrupted",
+            ServerEventType.TURN_INTERRUPTED,
             {"reason": "service_shutdown", "will_resume": True},
         )
 
@@ -497,7 +519,7 @@ class ConversationWorkflow:
         session_id: str,
         turn_id: str,
         field: str,
-        event_type: str,
+        event_type: ServerEventType,
         exc: Exception,
     ) -> None:
         logger.warning("Auxiliary task {} failed for turn {}: {}", field, turn_id, exc)
@@ -571,7 +593,7 @@ class ConversationWorkflow:
         await self.event_broker.emit(
             session.id,
             turn.id,
-            "turn.auxiliary_retry.completed",
+            ServerEventType.TURN_AUXILIARY_RETRY_COMPLETED,
             {"task": task.value},
         )
 
@@ -585,13 +607,13 @@ class ConversationWorkflow:
             await self.event_broker.emit(
                 session.id,
                 turn.id,
-                "turn.auxiliary.failed",
+                ServerEventType.TURN_AUXILIARY_FAILED,
                 {"task": AuxiliaryTask.SUGGESTIONS.value},
             )
             raise
         await self.event_broker.emit(
             session.id,
             turn.id,
-            "turn.auxiliary.completed",
+            ServerEventType.TURN_AUXILIARY_COMPLETED,
             {"task": AuxiliaryTask.SUGGESTIONS.value},
         )

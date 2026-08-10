@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from sayra.app.api.deps import Container
 from sayra.app.schemas.websocket import ClientEvent, ServerEvent
 from sayra.app.services import turn_service
+from sayra.core.enums import ServerEventType
 from sayra.core.exceptions import SayraError
 
 router = APIRouter()
@@ -54,7 +55,10 @@ async def conversation_socket(
 
     async def send_protocol_error(message: str) -> None:
         await websocket.send_json(
-            {"type": "protocol.error", "data": {"message": message}}
+            {
+                "type": ServerEventType.PROTOCOL_ERROR.value,
+                "data": {"message": message},
+            }
         )
 
     try:

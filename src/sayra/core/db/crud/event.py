@@ -6,13 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sayra.common.datetime import utc_now
 from sayra.common.decorators import with_db_session
 from sayra.core.db.models import EventRecord
+from sayra.core.enums import ServerEventType
 
 
 @with_db_session
 async def insert_event(
     db: AsyncSession,
     turn_id: str,
-    event_type: str,
+    event_type: ServerEventType,
     data: dict,
     after_sequence: int = 0,
 ) -> int:

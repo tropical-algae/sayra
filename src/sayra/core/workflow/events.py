@@ -7,21 +7,49 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from sayra.core.db.crud import event as event_crud
+from sayra.core.enums import ServerEventType
 
 
 class ServerEvent(BaseModel):
     session_id: str
     turn_id: str
     sequence: int
-    type: str
+    type: ServerEventType
     data: dict[str, Any] = Field(default_factory=dict)
 
 
 class EventBroker:
     """Persisted event log plus in-process wakeups for reconnect-safe delivery."""
 
-    _TRANSIENT_EVENT_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {"assistant.audio.delta"}
+    _TRANSIENT_EVENT_TYPES: ClassVar[frozenset[ServerEventType]] = frozenset(
+        {ServerEventType.ASSISTANT_AUDIO_DELTA}
+    )
+    _ASSISTANT_FAILURE_EVENT_TYPES: ClassVar[frozenset[ServerEventType]] = frozenset(
+        {
+            ServerEventType.ASSISTANT_AUDIO_FAILED,
+            ServerEventType.ASSISTANT_TRANSLATION_FAILED,
+            ServerEventType.ASSISTANT_SUGGESTION_FAILED,
+            ServerEventType.ASSISTANT_GUIDANCE_FAILED,
+        }
+    )
+    _TURN_TERMINAL_EVENT_TYPES: ClassVar[frozenset[ServerEventType]] = frozenset(
+        {
+            ServerEventType.TURN_COMPLETED,
+            ServerEventType.TURN_FAILED,
+            ServerEventType.TURN_CANCELLED,
+        }
+    )
+    _AUXILIARY_TERMINAL_EVENT_TYPES: ClassVar[frozenset[ServerEventType]] = frozenset(
+        {
+            ServerEventType.TURN_AUXILIARY_RETRY_COMPLETED,
+            ServerEventType.TURN_AUXILIARY_COMPLETED,
+            ServerEventType.TURN_AUXILIARY_FAILED,
+        }
+    )
+    _CLEANUP_EVENT_TYPES: ClassVar[frozenset[ServerEventType]] = (
+        _TURN_TERMINAL_EVENT_TYPES
+        | _AUXILIARY_TERMINAL_EVENT_TYPES
+        | _ASSISTANT_FAILURE_EVENT_TYPES
     )
 
     def __init__(
@@ -46,7 +74,7 @@ class EventBroker:
         self,
         session_id: str,
         turn_id: str,
-        event_type: str,
+        event_type: ServerEventType,
         data: dict | None = None,
         audio_data: bytes | None = None,
     ) -> ServerEvent:
@@ -83,14 +111,7 @@ class EventBroker:
                 turn_id, deque(maxlen=self.live_buffer_size)
             )
             buffer.append(event)
-        if event_type in {
-            "turn.completed",
-            "turn.failed",
-            "turn.cancelled",
-            "turn.auxiliary_retry.completed",
-            "turn.auxiliary.completed",
-            "turn.auxiliary.failed",
-        } or (event_type.startswith("assistant.") and event_type.endswith(".failed")):
+        if event_type in self._CLEANUP_EVENT_TYPES:
             self._cleanup_handles[turn_id] = asyncio.get_running_loop().call_later(
                 self.audio_retention_seconds,
                 self._clear_turn_state,
@@ -138,13 +159,9 @@ class EventBroker:
     ) -> AsyncIterator[ServerEvent]:
         sequence = after_sequence
         terminal_types = (
-            {
-                "turn.auxiliary_retry.completed",
-                "turn.auxiliary.completed",
-                "turn.auxiliary.failed",
-            }
+            self._AUXILIARY_TERMINAL_EVENT_TYPES | self._ASSISTANT_FAILURE_EVENT_TYPES
             if auxiliary
-            else {"turn.completed", "turn.failed", "turn.cancelled"}
+            else self._TURN_TERMINAL_EVENT_TYPES
         )
         while True:
             events = await self.list_after(turn_id, sequence)
@@ -152,11 +169,7 @@ class EventBroker:
                 event.session_id = session_id
                 sequence = event.sequence
                 yield event
-                if event.type in terminal_types or (
-                    auxiliary
-                    and event.type.startswith("assistant.")
-                    and event.type.endswith(".failed")
-                ):
+                if event.type in terminal_types:
                     return
             if events:
                 continue
@@ -168,6 +181,6 @@ class EventBroker:
                         session_id=session_id,
                         turn_id=turn_id,
                         sequence=sequence,
-                        type="connection.heartbeat",
+                        type=ServerEventType.CONNECTION_HEARTBEAT,
                         data={},
                     )

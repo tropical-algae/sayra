@@ -79,6 +79,33 @@ class RetryableAuxiliaryTask(StrEnum):
     GUIDANCE = "guidance"
 
 
+class ServerEventType(StrEnum):
+    TURN_STARTED = "turn.started"
+    TURN_COMPLETED = "turn.completed"
+    TURN_FAILED = "turn.failed"
+    TURN_CANCELLED = "turn.cancelled"
+    TURN_INTERRUPTED = "turn.interrupted"
+    TURN_AUXILIARY_RETRY_COMPLETED = "turn.auxiliary_retry.completed"
+    TURN_AUXILIARY_COMPLETED = "turn.auxiliary.completed"
+    TURN_AUXILIARY_FAILED = "turn.auxiliary.failed"
+
+    ASSISTANT_TEXT_DELTA = "assistant.text.delta"
+    ASSISTANT_TEXT_COMPLETED = "assistant.text.completed"
+    ASSISTANT_AUDIO_STARTED = "assistant.audio.started"
+    ASSISTANT_AUDIO_DELTA = "assistant.audio.delta"
+    ASSISTANT_AUDIO_COMPLETED = "assistant.audio.completed"
+    ASSISTANT_AUDIO_FAILED = "assistant.audio.failed"
+    ASSISTANT_TRANSLATION_COMPLETED = "assistant.translation.completed"
+    ASSISTANT_TRANSLATION_FAILED = "assistant.translation.failed"
+    ASSISTANT_SUGGESTION_COMPLETED = "assistant.suggestion.completed"
+    ASSISTANT_SUGGESTION_FAILED = "assistant.suggestion.failed"
+    ASSISTANT_GUIDANCE_COMPLETED = "assistant.guidance.completed"
+    ASSISTANT_GUIDANCE_FAILED = "assistant.guidance.failed"
+
+    CONNECTION_HEARTBEAT = "connection.heartbeat"
+    PROTOCOL_ERROR = "protocol.error"
+
+
 class AudioAssetType(StrEnum):
     USER_RECORDING = "user_recording"
     ASSISTANT_REPLY = "assistant_reply"
