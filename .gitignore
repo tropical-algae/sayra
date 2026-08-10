@@ -99,3 +99,8 @@ target/
 cache/!.*
 cov.xml
 report.xml
+
+# Frontend
+node_modules/
+web/.env.local
+*.tsbuildinfo
